@@ -1,0 +1,292 @@
+
+```{r}
+library(data.table)
+library(magrittr)
+library(readxl)
+
+# Read files for the analysis and give them a tidy format as data tables
+
+
+xl_data <- "~/Desktop/Projects/Attila Toth/IHO1vsDMC1-pooled_AToth.xlsx"
+tab_names <- excel_sheets(path=xl_data)
+list_all <- lapply(tab_names,function(x)read_excel(path=xl_data,sheet = x))
+list_all <- lapply(list_all,function(x) as.data.table(x))
+
+names(list_all)<-tab_names
+dt3 <- rbindlist(list_all,idcol=TRUE)
+dt3 <- dt3[,c("cell.id","chromosome","fragment","fragment2"):= tstrsplit(ROI,"-",fixed = "TRUE")]%>%.[,fragment2:=NULL]%>%.[,ROI:=NULL]
+dt3 <- dt3[,c("cell.id","cell.id2"):= tstrsplit(cell.id,"_",fixed = "TRUE")]%>%.[,fragment:=NULL]%>%.[,cell.id2:=NULL]
+colnames(dt3)<-c("experiment","position","IHO1","DMC1","cell.id","fragment")
+
+
+
+xl_data <- "~/Desktop/Projects/Attila Toth/IHO1vsDMC1-Spo11IR_AToth.xlsx"
+tab_names <- excel_sheets(path=xl_data)
+list_all <- lapply(tab_names,function(x)read_excel(path=xl_data,sheet = x))
+list_all2 <- lapply(list_all,function(x) as.data.table(x) )
+
+names(list_all2)<-tab_names
+dt2 <- rbindlist(list_all2,idcol=TRUE)
+dt2 <- dt2[,c("cell.id","chromosome"):= tstrsplit(ROI,"_",fixed = "TRUE")]%>%.[,ROI:=NULL]
+dt2<- dt2[,c("fragment","fragment2"):= tstrsplit(chromosome,"-",fixed = "TRUE")]%>%.[,fragment2:=NULL]%>%.[,chromosome:=NULL]
+
+colnames(dt2)<-c("experiment","position","IHO1","DMC1","cell.id","fragment")
+dt <- merge(dt3,dt2,by=c("experiment","position","IHO1","DMC1","cell.id","fragment"),all=T)
+
+```
+
+
+```{r}
+iho1.data <- copy(dt)%>%.[,DMC1:=NULL]
+colnames(iho1.data) <- c("experiment","start","ih.int","cell.id","fragment")
+iho1.data[,start:= as.integer(start)]
+
+
+dmc1.data<- copy(dt)%>%.[,IHO1:=NULL]
+colnames(dmc1.data) <- c("experiment","start","dm.int","cell.id","fragment")
+dmc1.data[,start:=as.integer(start)]
+
+
+
+#scale the data
+
+iho1.data[,ih.int:=scale(ih.int),by=.(cell.id,fragment,experiment)]
+dmc1.data[,dm.int:=scale(dm.int),by=.(cell.id,fragment,experiment)]
+
+#translating the start for more efficiente and clear computation
+
+iho1.data <- iho1.data[,start:=start-min(start),by=.(cell.id,fragment,experiment)]
+dmc1.data <- dmc1.data[,start:=start-min(start),by=.(cell.id,fragment,experiment)]
+
+
+```
+
+```{r}
+# Merge IHO1 and DMC1 data table for Crosscorrelation
+
+ih.dm.data<-merge(iho1.data,dmc1.data,by=c("experiment","start","cell.id","fragment"))%>%na.omit(.)
+
+#Compute cross-correlation up to a distance of max_distance
+all_correlation = list();
+max_distance = 10;
+
+for (i in (1:max_distance)){
+  
+  all_correlation[[i]] <- ih.dm.data[,.(corr = ccf(.SD$ih.int,.SD$dm.int,lag.max=i-1,plot=FALSE)$acf[[1]]),by=c("cell.id","fragment","experiment")] 
+  
+}
+
+crosscorr.res.allcell <- rbindlist(all_correlation,idcol=TRUE)
+names(crosscorr.res.allcell)[1] <- "distance"
+crosscorr.res.allcell <- crosscorr.res.allcell[,distance:=distance-1]
+#Save this file for P-value later
+
+
+#This is just an example for the p-value later
+corr.res.allcell<-copy(crosscorr.res.allcell)
+
+```
+
+```{r}
+
+# Compute correlation of IHO1 and DMC1 up to a distance of max_distance
+
+all_correlation = list();
+for (i in (1:max_distance)){
+  
+  all_correlation[[i]] <- ih.dm.data[,.(corr = ccf(.SD$ih.int,.SD$ih.int,lag.max=i-1,plot=FALSE)$acf[[1]]),by=c("cell.id","fragment","experiment")] 
+  
+}
+
+corr.res.allcell.ih<-rbindlist(all_correlation,idcol=TRUE)
+names(corr.res.allcell.ih)[1] <- "distance"
+corr.res.allcell.ih<-corr.res.allcell.ih[,distance:=distance-1]
+
+#Save this file for P-value later
+
+all_correlation = list();
+
+
+for (i in (1:max_distance)){
+  all_correlation[[i]] <- ih.dm.data[,.(corr = ccf(.SD$dm.int,.SD$dm.int,lag.max=i-1,plot=FALSE)$acf[[1]]),by=c("cell.id","fragment","experiment")] 
+  
+}
+
+corr.res.allcell.dm<-rbindlist(all_correlation,idcol=TRUE)
+names(corr.res.allcell.dm)[1] <- "distance"
+corr.res.allcell.dm<-corr.res.allcell.dm[,distance:=distance-1]
+
+#Save this file for P-value later
+```
+
+
+## Correlation and cross correlation for pooled data
+
+```{r}
+
+# Averaging correlation values as explained in the methods 
+#for not pooled data just do by=c(..."experiment") at the end of each line of the code in this chunk
+
+crosscorr.res.allcell <- crosscorr.res.allcell[experiment %in% c("Spo11KO_1hr_2","Spo11KO_1hr_1"),exper:= "Spo11KO_1hr"]%>%.[experiment %in% c("Spo11KO_24hr_2","Spo11KO_24hr_1"),exper:= "Spo11KO_24hr"]%>%.[experiment %in% c("wt1","wt2"),exper:= "wt_1_2"]%>%.[experiment %in% c("wt3","wt4"),exper:= "wt_3_4"]%>%.[experiment %in% c("ATRKO1","ATRKO2","ATRKO3"),exper:= "ATRKO"]%>%.[experiment %in% c("ATMATRdKO1","ATMATRdKO2","ATMATRdKO3"),exper:= "ATMATRdKO"]%>%.[experiment %in% c("ATMATRDNAPk tKO1","ATMATRDNAPk tKO2"),exper:= "ATMATRDNAPk tKO"]%>%.[experiment %in% c("ATMKOSpo11het1","ATMKOSpo11het2","ATMKOSpo11het3"),exper:= "ATMKOSpo11het"]%>%.[experiment %in% c("Spo11het1","Spo11het2","Spo11het3"),exper:= "Spo11het"]%>%.[experiment %in% c("CHK2KO"),exper:= "CHK2KO"]%>%.[experiment %in% c("TRIP13KO"),exper:= "TRIP13KO"]%>%.[,.(sisj=mean(corr),std.err.sisj=sd(corr)/sqrt(.N)),by=.(distance,exper)]%>%.[,feature:="IHO1-DMC1"]
+
+
+corr.res.allcell.dm <- corr.res.allcell.dm[experiment %in% c("Spo11KO_1hr_2","Spo11KO_1hr_1"),exper:= "Spo11KO_1hr"]%>%.[experiment %in% c("Spo11KO_24hr_2","Spo11KO_24hr_1"),exper:= "Spo11KO_24hr"]%>%.[experiment %in% c("wt1","wt2"),exper:= "wt_1_2"]%>%.[experiment %in% c("wt3","wt4"),exper:= "wt_3_4"]%>%.[experiment %in% c("ATRKO1","ATRKO2","ATRKO3"),exper:= "ATRKO"]%>%.[experiment %in% c("ATMATRdKO1","ATMATRdKO2","ATMATRdKO3"),exper:= "ATMATRdKO"]%>%.[experiment %in% c("ATMATRDNAPk tKO1","ATMATRDNAPk tKO2"),exper:= "ATMATRDNAPk tKO"]%>%.[experiment %in% c("ATMKOSpo11het1","ATMKOSpo11het2","ATMKOSpo11het3"),exper:= "ATMKOSpo11het"]%>%.[experiment %in% c("Spo11het1","Spo11het2","Spo11het3"),exper:= "Spo11het"]%>%.[experiment %in% c("CHK2KO"),exper:= "CHK2KO"]%>%.[experiment %in% c("TRIP13KO"),exper:= "TRIP13KO"]%>%.[,.(sisj=mean(corr),std.err.sisj=sd(corr)/sqrt(.N)),by=.(distance,exper)]%>%.[,feature:="DMC1"]
+
+corr.res.allcell.ih <- corr.res.allcell.ih[experiment %in% c("Spo11KO_1hr_2","Spo11KO_1hr_1"),exper:= "Spo11KO_1hr"]%>%.[experiment %in% c("Spo11KO_24hr_2","Spo11KO_24hr_1"),exper:= "Spo11KO_24hr"]%>%.[experiment %in% c("wt1","wt2"),exper:= "wt_1_2"]%>%.[experiment %in% c("wt3","wt4"),exper:= "wt_3_4"]%>%.[experiment %in% c("ATRKO1","ATRKO2","ATRKO3"),exper:= "ATRKO"]%>%.[experiment %in% c("ATMATRdKO1","ATMATRdKO2","ATMATRdKO3"),exper:= "ATMATRdKO"]%>%.[experiment %in% c("ATMATRDNAPk tKO1","ATMATRDNAPk tKO2"),exper:= "ATMATRDNAPk tKO"]%>%.[experiment %in% c("ATMKOSpo11het1","ATMKOSpo11het2","ATMKOSpo11het3"),exper:= "ATMKOSpo11het"]%>%.[experiment %in% c("Spo11het1","Spo11het2","Spo11het3"),exper:= "Spo11het"]%>%.[experiment %in% c("CHK2KO"),exper:= "CHK2KO"]%>%.[experiment %in% c("TRIP13KO"),exper:= "TRIP13KO"]%>%.[,.(sisj=mean(corr),std.err.sisj=sd(corr)/sqrt(.N)),by=.(distance,exper)]%>%.[,feature:="IHO1"]
+
+
+corr.res<-merge(corr.res.allcell.ih,corr.res.allcell.dm,all=T)
+corr.res<-merge(corr.res,crosscorr.res.allcell,all=T)
+
+#Final data table with all correlation and crosscorrelation
+
+```
+
+
+## P-Values
+
+```{r}
+#Compute p-val for one of the saved file between crosscorrelation and correlation
+
+#corr.res.allcell<-fread("...")
+#Read the chosen data table
+
+corr.res.allcell <- corr.res.allcell[experiment %in% c("Spo11KO_1hr_2","Spo11KO_1hr_1"),exper:= "Spo11KO_1hr"]%>%.[experiment %in% c("Spo11KO_24hr_2","Spo11KO_24hr_1"),exper:= "Spo11KO_24hr"]%>%.[experiment %in% c("wt1","wt2"),exper:= "wt_1_2"]%>%.[experiment %in% c("wt3","wt4"),exper:= "wt_3_4"]%>%.[experiment %in% c("ATRKO1","ATRKO2","ATRKO3"),exper:= "ATRKO"]%>%.[experiment %in% c("ATMATRdKO1","ATMATRdKO2","ATMATRdKO3"),exper:= "ATMATRdKO"]%>%.[experiment %in% c("ATMATRDNAPk tKO1","ATMATRDNAPk tKO2"),exper:= "ATMATRDNAPk tKO"]%>%.[experiment %in% c("ATMKOSpo11het1","ATMKOSpo11het2","ATMKOSpo11het3"),exper:= "ATMKOSpo11het"]%>%.[experiment %in% c("Spo11het1","Spo11het2","Spo11het3"),exper:= "Spo11het"]%>%.[experiment %in% c("CHK2KO"),exper:= "CHK2KO"]%>%.[experiment %in% c("TRIP13KO"),exper:= "TRIP13KO"]
+
+corr.res.test<-copy(corr.res.allcell)
+corr.res.test0 <-copy(corr.res.allcell)
+corr.res.test0.all <-copy(corr.res.allcell)
+
+
+
+corr.res.test0 <- corr.res.test0[between(distance,0,max_distance),.(p.val = t.test(corr)$p.value),by=c("distance","exper")]
+#Use by=c(.."experiment") for not pooled experiments
+
+```
+
+
+# ANALYSIS RAD1
+```{r}
+
+#Read data for RAD1
+
+xl_data <- "~/Desktop/Projects/Attila Toth/IHO1vsRAD51-pooled_AToth.xlsx"
+tab_names <- excel_sheets(path=xl_data)
+list_all <- lapply(tab_names,function(x)read_excel(path=xl_data,sheet = x))
+list_all <- lapply(list_all,function(x) as.data.table(x) )
+
+names(list_all) <- tab_names
+dt <- rbindlist(list_all,idcol=TRUE)
+dt <- dt[,c("cell.id","chromosome"):= tstrsplit(ROI,"_",fixed = "TRUE")]%>%.[,ROI:=NULL]
+dt <- dt[,c("fragment","fragment2"):= tstrsplit(chromosome,"-",fixed = "TRUE")]%>%.[,fragment2:=NULL]%>%.[,chromosome:=NULL]
+
+colnames(dt)<-c("experiment","position","IHO1","RAD51","cell.id","fragment")
+
+```
+
+```{r}
+iho1.data <- copy(dt)%>%.[,RAD51:=NULL]
+colnames(iho1.data) <- c("experiment","start","ih.int","cell.id","fragment")
+iho1.data[,start:= as.integer(start)]
+
+
+rad51.data<- copy(dt)%>%.[,IHO1:=NULL]
+colnames(rad51.data) <- c("experiment","start","rd.int","cell.id","fragment")
+rad51.data[,start:=as.integer(start)]
+
+
+# Scale data and translate as in IHO1-DMC1
+iho1.data <- iho1.data[,ih.int:=scale(ih.int),by=.(cell.id,fragment,experiment)]%>%.[,start:=start-min(start),by=.(cell.id,fragment,experiment)]
+rad51.data <- rad51.data[,rd.int:=scale(rd.int),by=.(cell.id,fragment,experiment)]%>%.[,start:=start-min(start),by=.(cell.id,fragment,experiment)]
+
+```
+
+```{r}
+#Compute crosscorrelation up to a distance of max_distance
+
+ih.rd.data<-merge(iho1.data,rad51.data,by=c("experiment","start","cell.id","fragment"))%>%na.omit(.)
+max_distance = 51
+all_correlation = list();
+for (i in (1:max_distance)){
+  
+  all_correlation[[i]] <- ih.rd.data[,.(corr = ccf(.SD$ih.int,.SD$rd.int,lag.max=i-1,plot=FALSE)$acf[[1]]),by=c("cell.id","fragment","experiment")] 
+  
+}
+
+crosscorr.res.allcell<-rbindlist(all_correlation,idcol=TRUE)
+names(crosscorr.res.allcell)[1] <- "distance"
+crosscorr.res.allcell<-crosscorr.res.allcell[,distance:=distance-1]
+#Save this file for P-value later
+
+
+#This is just an example for the p-value later
+corr.res.allcell<-copy(crosscorr.res.allcell)
+
+```
+
+
+```{r}
+#Compute correlation for IHO1 adn RAD1 up to a distance of max_distance
+
+all_correlation = list();
+for (i in (1:max_distance)){
+  
+  all_correlation[[i]] <- ih.rd.data[,.(corr = ccf(.SD$ih.int,.SD$ih.int,lag.max=i-1,plot=FALSE)$acf[[1]]),by=c("cell.id","fragment","experiment")] 
+  
+}
+
+corr.res.allcell.ih<-rbindlist(all_correlation,idcol=TRUE)
+names(corr.res.allcell.ih)[1] <- "distance"
+corr.res.allcell.ih<-corr.res.allcell.ih[,distance:=distance-1]
+#Save this file for P-value later
+
+all_correlation = list();
+for (i in (1:max_distance)){
+  all_correlation[[i]] <- ih.rd.data[,.(corr = ccf(.SD$rd.int,.SD$rd.int,lag.max=i-1,plot=FALSE)$acf[[1]]),by=c("cell.id","fragment","experiment")] 
+}
+
+corr.res.allcell.rd<-rbindlist(all_correlation,idcol=TRUE)
+names(corr.res.allcell.rd)[1] <- "distance"
+corr.res.allcell.rd<-corr.res.allcell.rd[,distance:=distance-1]
+#Save this file for P-value later
+
+```
+
+
+## Correlation and cross correlation for pooled data
+```{r}
+# Averaging correlation values as explained in the methods 
+#for not pooled data just do by=c(..."experiment") at the end of each line of the code in this chunk
+
+crosscorr.res.allcell<-crosscorr.res.allcell[experiment %in% c("wt1","wt2"),exper:= "wt_1_2"]%>%.[experiment %in% c("wt3","wt4"),exper:= "wt_3_4"]%>%.[experiment %in% c("ATRKO1","ATRKO2","ATRKO3","ATRKO4"),exper:= "ATRKO"]%>%.[experiment %in% c("ATMATRdKO1","ATMATRdKO2","ATMATRdKO3","ATMATRdKO4"),exper:= "ATMATRdKO"]%>%.[experiment %in% c("ATMATRDNAPk tKO1","ATMATRDNAPk tKO2"),exper:= "ATMATRDNAPktKO"]%>%.[experiment %in% c("ATMKO1","ATMKO2"),exper:= "ATMKO"]%>%.[experiment %in% c("ATMwt1","ATMwt2"),exper:= "ATMwt"]%>%.[experiment %in% c("ATMKOSpo11het1","ATMKOSpo11het2","ATMKOSpo11het3"),exper:= "ATMKOSpo11het"]%>%.[experiment %in% c("Spo11het1","Spo11het2","Spo11het3"),exper:= "Spo11het"]%>%.[experiment %in% c("CHK2KO"),exper:= "CHK2KO"]%>%.[experiment %in% c("TRIP13KO"),exper:= "TRIP13KO"]%>%.[,.(sisj=mean(corr),std.err.sisj=sd(corr)/sqrt(.N)),by=.(distance,exper)]%>%.[,feature:="IHO1-RAD1"]
+
+
+corr.res.allcell.rd<-corr.res.allcell.rd[experiment %in% c("wt1","wt2"),exper:= "wt_1_2"]%>%.[experiment %in% c("wt3","wt4"),exper:= "wt_3_4"]%>%.[experiment %in% c("ATRKO1","ATRKO2","ATRKO3","ATRKO4"),exper:= "ATRKO"]%>%.[experiment %in% c("ATMATRdKO1","ATMATRdKO2","ATMATRdKO3","ATMATRdKO4"),exper:= "ATMATRdKO"]%>%.[experiment %in% c("ATMATRDNAPk tKO1","ATMATRDNAPk tKO2"),exper:= "ATMATRDNAPktKO"]%>%.[experiment %in% c("ATMKO1","ATMKO2"),exper:= "ATMKO"]%>%.[experiment %in% c("ATMwt1","ATMwt2"),exper:= "ATMwt"]%>%.[experiment %in% c("ATMKOSpo11het1","ATMKOSpo11het2","ATMKOSpo11het3"),exper:= "ATMKOSpo11het"]%>%.[experiment %in% c("Spo11het1","Spo11het2","Spo11het3"),exper:= "Spo11het"]%>%.[experiment %in% c("CHK2KO"),exper:= "CHK2KO"]%>%.[experiment %in% c("TRIP13KO"),exper:= "TRIP13KO"]%>%.[,.(sisj=mean(corr),std.err.sisj=sd(corr)/sqrt(.N)),by=.(distance,exper)]%>%.[,feature:="RAD1"]
+
+corr.res.allcell.ih<-corr.res.allcell.ih[experiment %in% c("wt1","wt2"),exper:= "wt_1_2"]%>%.[experiment %in% c("wt3","wt4"),exper:= "wt_3_4"]%>%.[experiment %in% c("ATRKO1","ATRKO2","ATRKO3","ATRKO4"),exper:= "ATRKO"]%>%.[experiment %in% c("ATMATRdKO1","ATMATRdKO2","ATMATRdKO3","ATMATRdKO4"),exper:= "ATMATRdKO"]%>%.[experiment %in% c("ATMATRDNAPk tKO1","ATMATRDNAPk tKO2"),exper:= "ATMATRDNAPktKO"]%>%.[experiment %in% c("ATMKO1","ATMKO2"),exper:= "ATMKO"]%>%.[experiment %in% c("ATMwt1","ATMwt2"),exper:= "ATMwt"]%>%.[experiment %in% c("ATMKOSpo11het1","ATMKOSpo11het2","ATMKOSpo11het3"),exper:= "ATMKOSpo11het"]%>%.[experiment %in% c("Spo11het1","Spo11het2","Spo11het3"),exper:= "Spo11het"]%>%.[experiment %in% c("CHK2KO"),exper:= "CHK2KO"]%>%.[experiment %in% c("TRIP13KO"),exper:= "TRIP13KO"]%>%.[,.(sisj=mean(corr),std.err.sisj=sd(corr)/sqrt(.N)),by=.(distance,exper)]%>%.[,feature:="IHO1"]
+
+
+corr.res<-merge(corr.res.allcell.ih,corr.res.allcell.rd,all=T)
+corr.res<-merge(corr.res,crosscorr.res.allcell,all=T)
+#Final data table with all correlation and crosscorrelation
+
+```
+
+
+## P-values
+```{r}
+#Compute p-val for one of the saved files between crosscorrelation and correlation
+
+#corr.res.allcell<-fread("...")
+#Read the chosen data table
+
+corr.res.allcell<-corr.res.allcell[experiment %in% c("wt1","wt2"),exper:= "wt_1_2"]%>%.[experiment %in% c("wt3","wt4"),exper:= "wt_3_4"]%>%.[experiment %in% c("ATRKO1","ATRKO2","ATRKO3","ATRKO4"),exper:= "ATRKO"]%>%.[experiment %in% c("ATMATRdKO1","ATMATRdKO2","ATMATRdKO3","ATMATRdKO4"),exper:= "ATMATRdKO"]%>%.[experiment %in% c("ATMATRDNAPk tKO1","ATMATRDNAPk tKO2"),exper:= "ATMATRDNAPktKO"]%>%.[experiment %in% c("ATMKO1","ATMKO2"),exper:= "ATMKO"]%>%.[experiment %in% c("ATMwt1","ATMwt2"),exper:= "ATMwt"]%>%.[experiment %in% c("ATMKOSpo11het1","ATMKOSpo11het2","ATMKOSpo11het3"),exper:= "ATMKOSpo11het"]%>%.[experiment %in% c("Spo11het1","Spo11het2","Spo11het3"),exper:= "Spo11het"]%>%.[experiment %in% c("CHK2KO"),exper:= "CHK2KO"]%>%.[experiment %in% c("TRIP13KO"),exper:= "TRIP13KO"]
+
+corr.res.test<-copy(corr.res.allcell)
+corr.res.test0 <-copy(corr.res.allcell)
+corr.res.test0.all <-copy(corr.res.allcell)
+
+corr.res.test0 <- corr.res.test0[between(distance,0,max_distance),.(p.val = t.test(corr)$p.value),by=c("distance","exper")]
+#Use by=c(.."experiment") for not pooled experiments
+
+```
